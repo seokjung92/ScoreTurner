@@ -1,7 +1,8 @@
 // 대략 인식 정확도 측정: 정답(손으로 고친 MusicXML에서 뽑은 음)과 줄·단별로 비교
 import { loadPdf, renderGray } from '../js/pdfdoc.js';
 import { recognize, smoothKeys } from '../js/omr.js';
-import { chromaOf, normalize, scoreEvents, Follower } from '../js/follow.js';
+import { chromaOf, normalize, scoreEvents, Follower, Tracker, AutoTurner, pageStarts } from '../js/follow.js';
+import { OnsetChroma } from '../js/listen.js';
 
 const SRC = 'http://127.0.0.1:8766/';
 const out = document.getElementById('out');
@@ -175,5 +176,143 @@ window.drawPage = async (id, p, opts = {}, crop = null) => {
   });
   await doc.destroy();
   return `spacing ${res.spacing}, systems ${res.systems.length}, events ${res.systems.map((s) => s.events.length).join(',')}`;
+};
+
+// ---------- 소리로 시험: 가상 녹음(make_perf.py + render_perf.swift) → 분석 → 따라가기 → 자동 넘김 ----------
+async function omrOf(id, height = 3000) {
+  window.OMR ||= {};
+  const ck = id + '@' + height;
+  return window.OMR[ck] || (window.OMR[ck] = await evalSong(id, { height }));
+}
+
+async function loadWav(url, sr = 48000) {
+  const buf = await (await fetch(url, { cache: 'reload' })).arrayBuffer();
+  const ac = new OfflineAudioContext(1, 1, sr);
+  const ab = await ac.decodeAudioData(buf);
+  const x = new Float32Array(ab.length);
+  for (let c = 0; c < ab.numberOfChannels; c++) { const d = ab.getChannelData(c); for (let i = 0; i < x.length; i++) x[i] += d[i] / ab.numberOfChannels; }
+  return { x, sr: ab.sampleRate };
+}
+
+/**
+ * opts: { scenario:'clean'|'repeat'|'startmid', snr: 잡음(dB, 없으면 무잡음), perView, turnAt, tracker:{}, listen:{}, verbose }
+ */
+window.runAudio = async (opts = {}, ids = ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8']) => {
+  out.textContent = '';
+  const sc = opts.scenario || 'clean';
+  const lines = [];
+  const T = { groups: 0, hidden: 0, turns: 0, wrong: 0, late: [], ev: 0, okPage: 0, okSys: 0 };
+  for (const id of ids) {
+    const r = await omrOf(id, opts.height || 3000);
+    const ev = scoreEvents(r.results, opts.events);
+    const numPages = r.results.length;
+    const starts = pageStarts(ev, numPages);
+    const perf = await (await fetch(`${SRC}audio/${id}-${sc}.json`, { cache: 'reload' })).json();
+    const { x, sr } = await loadWav(`${SRC}audio/${id}-${sc}.wav`);
+    // 잡음 (방 소리·마이크 잡음 흉내)
+    if (opts.snr != null) {
+      let e = 0; for (let i = 0; i < x.length; i++) e += x[i] * x[i];
+      const rms = Math.sqrt(e / x.length), amp = rms * Math.pow(10, -opts.snr / 20);
+      let seed = 7, hum = 0;
+      for (let i = 0; i < x.length; i++) {
+        seed = (seed * 1103515245 + 12345) % 2147483648;
+        const u = seed / 2147483648 - 0.5;
+        hum = hum * 0.98 + u * 0.2; // 낮은 소리 쪽이 큰 잡음
+        x[i] += amp * (u * 1.2 + hum * 2);
+      }
+    }
+    const an = new OnsetChroma(sr, opts.listen);
+    const trk = new Tracker(ev, opts.tracker);
+    const turner = new AutoTurner(ev, numPages, { turnAt: opts.turnAt, minConf: opts.minConf, jumpConf: opts.jumpConf });
+    const perView = opts.perView || 1;
+    const tl = perf.timeline;
+    let first = sc === 'startmid' ? tl[0].page + 1 : 1;
+    trk.reset(starts[first - 1]);
+    const display = [{ t: 0, first }];
+    const hop = Math.round(sr * 0.016);
+    let ti = 0, nEv = 0, okP = 0, okS = 0;
+    const turnsLog = [];
+    for (let i = an.n; i <= x.length; i += hop) {
+      const t = i / sr;
+      const e = an.frame(x.subarray(i - an.n, i), t);
+      if (!e) continue;
+      const pos = trk.push(e.chroma);
+      while (ti + 1 < tl.length && tl[ti + 1].t <= e.t + 0.03) ti++;
+      const truth = tl[ti];
+      nEv++;
+      if (opts.trace) (window.TRACE ||= []).push(`${e.t.toFixed(1)} 실제 ${truth.page + 1}-${truth.sys + 1} 추정 ${ev[pos].page + 1}-${ev[pos].sys + 1} #${pos} 확신 ${trk.conf.toFixed(2)}${trk.jumped ? ' 옮김' : ''}`);
+      if (ev[pos].page === truth.page) okP++;
+      if (ev[pos].page === truth.page && ev[pos].sys === truth.sys) okS++;
+      const want = turner.decide({ pos, conf: trk.conf, jumped: trk.jumped }, first, perView, t);
+      if (want != null) {
+        let n = Math.max(1, Math.min(numPages, want));
+        if (perView === 2) n = n - ((n - 1) % 2);
+        if (n !== first) {
+          turnsLog.push({ t, from: first, to: n, truth: `${truth.page + 1}쪽 ${truth.sys + 1}줄`, conf: trk.conf.toFixed(2), jumped: trk.jumped });
+          first = n; turner.turned(t); display.push({ t, first });
+        }
+      }
+    }
+    // 화면 평가: 연주 중인 음이 화면에 보였나 (미리 넘긴 마지막 줄은 괜찮음)
+    const lastSys = turner.lastSys;
+    const shownAt = (t) => { let f = display[0].first; for (const d of display) { if (d.t <= t) f = d.first; else break; } return f; };
+    const okVisible = (g, f) => {
+      const P = g.page + 1;
+      if (P >= f && P <= f + perView - 1) return true;
+      return P === f - 1 && g.sys === lastSys[g.page]; // 미리 넘긴 뒤 남은 마지막 줄
+    };
+    let hidden = 0;
+    for (const g of tl) if (!okVisible(g, shownAt(g.t + 0.4))) hidden++;
+    let wrong = 0;
+    for (const tr of turnsLog) {
+      const g = tl.filter((q) => q.t <= tr.t).pop() || tl[0];
+      const nextG = tl.find((q) => q.t > tr.t + 0.5);
+      if (!okVisible(g, tr.to) && !(nextG && okVisible(nextG, tr.to))) { wrong++; tr.wrong = true; }
+    }
+    // 쪽이 바뀐 순간부터 화면이 따라오기까지 (음수 = 미리 넘김)
+    const late = [];
+    for (let k = 1; k < tl.length; k++) {
+      if (tl[k].page === tl[k - 1].page) continue;
+      const P = tl[k].page + 1;
+      let when = null;
+      for (const d of display) if (P >= d.first && P <= d.first + perView - 1) { if (when == null || Math.abs(d.t - tl[k].t) < Math.abs(when - tl[k].t)) when = d.t; }
+      if (shownAt(tl[k].t) <= P && P <= shownAt(tl[k].t) + perView - 1 && (when == null || when > tl[k].t)) {
+        // 이미 보이는 중
+        const lastSwitch = display.filter((d) => d.t <= tl[k].t).pop();
+        when = lastSwitch.t;
+      }
+      late.push(when == null ? Infinity : when - tl[k].t);
+    }
+    T.groups += tl.length; T.hidden += hidden; T.turns += turnsLog.length; T.wrong += wrong; T.late.push(...late);
+    T.ev += nEv; T.okPage += okP; T.okSys += okS;
+    const lateStr = late.map((v) => (v === Infinity ? '안넘김' : v.toFixed(1))).join(' ');
+    const line = `${id}: 소리 사건 ${nEv}/${tl.length} · 위치(쪽) ${(okP / nEv * 100).toFixed(0)}% (줄) ${(okS / nEv * 100).toFixed(0)}% · 안 보인 음 ${(hidden / tl.length * 100).toFixed(1)}% · 넘김 ${turnsLog.length}번(잘못 ${wrong}) · 쪽 바뀜 대비 넘긴 시각(초) [${lateStr}]`;
+    lines.push(line); log(line);
+    if (opts.verbose) for (const tr of turnsLog) { const l = `   ${tr.t.toFixed(1)}초 ${tr.from}→${tr.to}쪽 (연주 ${tr.truth}, 확신 ${tr.conf}${tr.jumped ? ', 다시 찾음' : ''})${tr.wrong ? ' ✗' : ''}`; lines.push(l); log(l); }
+  }
+  const fin = T.late.filter((v) => v !== Infinity);
+  const miss = T.late.length - fin.length;
+  const tot = `전체(${sc}${opts.snr != null ? `, 잡음 ${opts.snr}dB` : ''}): 위치(쪽) ${(T.okPage / T.ev * 100).toFixed(1)}% (줄) ${(T.okSys / T.ev * 100).toFixed(1)}% · 안 보인 음 ${(T.hidden / T.groups * 100).toFixed(1)}% · 넘김 ${T.turns}번 중 잘못 ${T.wrong} · 쪽 바뀜 ${T.late.length}번 중 안 넘김 ${miss}, 넘긴 시각 가운데값 ${fin.sort((a, b) => a - b)[fin.length >> 1]?.toFixed(1)}초`;
+  lines.push(tot); log(tot);
+  return lines.join('\n');
+};
+/** 소리 분석만 따로 점검: 친 묶음을 사건으로 잡은 비율, 잡은 사건의 12음 분포가 실제 음과 얼마나 같은지 */
+window.diagAudio = async (id, sc = 'clean', lopts = {}) => {
+  const perf = await (await fetch(`${SRC}audio/${id}-${sc}.json`, { cache: 'reload' })).json();
+  const { x, sr } = await loadWav(`${SRC}audio/${id}-${sc}.wav`);
+  const an = new OnsetChroma(sr, lopts);
+  const hop = Math.round(sr * 0.016), evs = [];
+  for (let i = an.n; i <= x.length; i += hop) { const e = an.frame(x.subarray(i - an.n, i), i / sr); if (e) evs.push(e); }
+  const groups = [];
+  for (const n of perf.notes) { const g = groups[groups.length - 1]; if (g && Math.abs(g.t - n.t) < 0.04) g.m.push(n.midi); else groups.push({ t: n.t, m: [n.midi] }); }
+  let matched = 0; const cs = [], dt = [];
+  const used = new Set();
+  for (const g of groups) {
+    let best = null;
+    for (const e of evs) if (Math.abs(e.t - g.t) < 0.1 && (!best || Math.abs(e.t - g.t) < Math.abs(best.t - g.t))) best = e;
+    if (best) { matched++; used.add(best); dt.push(best.t - g.t); const c = normalize(chromaOf(g.m)); let s = 0; for (let q = 0; q < 12; q++) s += c[q] * best.chroma[q]; cs.push(s); }
+  }
+  cs.sort((a, b) => a - b); dt.sort((a, b) => a - b);
+  return `${id}: 사건 ${evs.length} (남는 사건 ${evs.length - used.size}), 묶음 ${groups.length} 중 잡음 ${matched} (${(matched / groups.length * 100).toFixed(0)}%), 분포 유사도 가운데 ${cs[cs.length >> 1]?.toFixed(2)} 하위25% ${cs[cs.length >> 2]?.toFixed(2)}, 시각차 가운데 ${(dt[dt.length >> 1] * 1000).toFixed(0)}ms`;
 };
 log('준비됨');

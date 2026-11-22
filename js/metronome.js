@@ -1,15 +1,11 @@
 // 메트로놈: Web Audio로 정확한 박을 미리 예약해 친다 (화면이 바빠도 박이 밀리지 않게)
 
+import { audioContext } from './audio.js';
+
 let ctx = null;
 
 function audio() {
-  if (!ctx) {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    ctx = new AC();
-    // 아이패드 무음 모드에서도 소리가 나게 (사파리 17+)
-    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { /* 무시 */ }
-  }
-  if (ctx.state === 'suspended') ctx.resume();
+  ctx = audioContext();
   return ctx;
 }
 

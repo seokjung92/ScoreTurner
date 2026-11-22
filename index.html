@@ -50,8 +50,9 @@
       <button class="btn" id="backBtn">← 서재</button>
       <div class="vtitle" id="vtitle"></div>
       <div class="vbtns">
-        <button class="btn" id="metroBtn" aria-label="메트로놈">♩ 메트로놈</button>
-        <button class="btn" id="inkBtn" aria-label="메모">✎ 메모</button>
+        <button class="btn" id="followBtn" aria-pressed="false" aria-label="자동 넘김">🎤<span class="lbl"> 자동 넘김</span></button>
+        <button class="btn" id="metroBtn" aria-label="메트로놈">♩<span class="lbl"> 메트로놈</span></button>
+        <button class="btn" id="inkBtn" aria-label="메모">✎<span class="lbl"> 메모</span></button>
         <button class="btn" id="layoutBtn">자동</button>
         <button class="btn" id="prevBtn" aria-label="이전 쪽">◀</button>
         <span id="pageNum" class="pnum"></span>
@@ -77,6 +78,11 @@
     </div>
     <div id="metroPill" class="pill" hidden>
       <span class="beat" id="beatDot"></span><span id="pillBpm"></span><button class="link" id="pillStop">정지</button>
+    </div>
+
+    <!-- 자동 넘김 상태 -->
+    <div id="followPill" class="pill fpill" hidden>
+      <span class="mic" id="micDot" aria-hidden="true"></span><span id="followText"></span><button class="link" id="followAct" hidden></button>
     </div>
 
     <!-- 메모 도구 -->

@@ -1,8 +1,12 @@
 import * as lib from './library.js';
-import { loadPdf, renderFit, thumbnail } from './pdfdoc.js';
+import { loadPdf, renderFit, thumbnail, renderGray } from './pdfdoc.js';
 import { Metronome, suggestBpm } from './metronome.js';
 import { InkStore, attachInk } from './ink.js';
 import { runTour, isTourOpen } from './tour.js';
+import { recognize, smoothKeys } from './omr.js';
+import { scoreEvents, Tracker, AutoTurner, pageStarts } from './follow.js';
+import { MicListener } from './listen.js';
+import { audioContext } from './audio.js';
 
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -135,7 +139,7 @@ function card(m) {
   more.setAttribute('aria-label', '더 보기');
   more.addEventListener('click', (e) => { e.stopPropagation(); cardMenu(m, more); });
   el.append(th, meta, more);
-  el.addEventListener('click', () => openScore(m.id));
+  el.addEventListener('click', () => { if (F.on) audioContext(); openScore(m.id); });
   return el;
 }
 
@@ -238,6 +242,7 @@ async function showPage(n, opts = {}) {
   canvases.forEach((c, i) => {
     const wrap = document.createElement('div');
     wrap.className = 'pagewrap';
+    wrap.dataset.page = nums[i];
     wrap.appendChild(c);
     box.appendChild(wrap);
     if (V.ink) V.inkLayers.push(attachInk(wrap, c, nums[i], V.ink, { isActive: () => V.memo, tool: () => V.tool }));
@@ -247,6 +252,7 @@ async function showPage(n, opts = {}) {
   $('pageNum').textContent = label;
   $('pageBadge').textContent = label;
   if (opts.flash) flash(opts.flash);
+  drawMark();
   lib.updateScore(V.meta.id, { page: n });
   // 다음 쪽 미리 그리기
   for (let i = 0; i < V.perView; i++) if (last + 1 + i <= total) getCanvas(last + 1 + i);
@@ -263,6 +269,7 @@ function turn(dir) {
     return;
   }
   showPage(next, { flash: dir > 0 ? 'right' : 'left' });
+  followManualTurn(next);
 }
 
 function flash(side) {
@@ -310,6 +317,8 @@ async function openScore(id) {
   history.pushState({ view: 'viewer' }, '');
   keepAwake();
   await showPage(meta.page || 1);
+  updateFollowUi();
+  if (F.on) startFollow();
   if (!store.get('tour.viewer', false)) viewerTour();
   else showBar(true, 2500);
 }
@@ -318,6 +327,7 @@ async function closeViewer(fromPop = false) {
   if ($('viewer').hidden) return;
   metro.stop();
   updateMetroUi();
+  stopFollow();
   $('metroPanel').hidden = true;
   setMemo(false);
   if (V.ink) await V.ink.flush();
@@ -395,6 +405,210 @@ function setupMetro() {
   $('pillStop').addEventListener('click', (e) => { e.stopPropagation(); metro.stop(); updateMetroUi(); });
 }
 
+// ---------------- 자동 넘김 (마이크로 연주를 듣고 따라가기) ----------------
+const OMR_VERSION = 1;
+const debug = params.has('debug');
+const F = {
+  on: store.get('follow', false),
+  mic: null, tracker: null, turner: null, events: null, starts: null, pages: null,
+  ticket: 0, ready: false, error: '', hitTimer: 0, markKey: '',
+};
+
+function setFollowText(text, act = '', onAct = null) {
+  $('followText').textContent = text;
+  const b = $('followAct');
+  b.hidden = !act;
+  b.textContent = act;
+  b.onclick = onAct ? (e) => { e.stopPropagation(); onAct(); } : null;
+}
+
+function updateFollowUi() {
+  $('followBtn').classList.toggle('active', F.on);
+  $('followBtn').setAttribute('aria-pressed', String(F.on));
+  $('followPill').hidden = !F.on || $('viewer').hidden;
+  $('micDot').classList.toggle('idle', !(F.mic && F.mic.on));
+  if (!F.on) { $('pages').querySelectorAll('.follow-mark').forEach((m) => m.remove()); F.markKey = ''; }
+}
+
+/** 악보 인식 (처음 한 번, 결과는 기기 안에 저장) → 따라가기 준비 */
+async function prepareFollow(ticket) {
+  const id = V.meta.id;
+  let data = await lib.getCache(id + ':omr');
+  if (!data || data.v !== OMR_VERSION) {
+    const results = [], sizes = [];
+    for (let p = 1; p <= V.doc.numPages; p++) {
+      if (ticket !== F.ticket) return;
+      setFollowText(`악보 읽는 중 ${p} / ${V.doc.numPages}`);
+      const img = await renderGray(V.doc, p, 3000);
+      await new Promise((r) => setTimeout(r, 0));
+      if (ticket !== F.ticket) return;
+      results.push(recognize(img));
+      sizes.push([img.width, img.height]);
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    smoothKeys(results);
+    data = {
+      v: OMR_VERSION,
+      pages: results.map((r, i) => ({
+        w: sizes[i][0], h: sizes[i][1],
+        systems: r.systems.map((sy) => ({
+          top: sy.top, bottom: sy.bottom, left: sy.left, right: sy.right, nst: sy.staves.length,
+          events: sy.events.map((e) => ({ x: Math.round(e.x), notes: e.notes.map((n) => ({ staff: n.staff, midi: n.midi })) })),
+        })),
+      })),
+    };
+    await lib.putCache(id + ':omr', data);
+  }
+  if (ticket !== F.ticket) return;
+  F.pages = data.pages;
+  F.events = scoreEvents(data.pages);
+  if (F.events.length < 12) {
+    F.error = 'noscore';
+    setFollowText('이 악보는 음표를 읽지 못해 자동 넘김을 쓸 수 없어요');
+    if (F.mic) F.mic.stop();
+    updateFollowUi();
+    return;
+  }
+  F.starts = pageStarts(F.events, V.doc.numPages);
+  F.tracker = new Tracker(F.events);
+  F.tracker.reset(F.starts[V.page - 1]);
+  F.turner = new AutoTurner(F.events, V.doc.numPages);
+  F.ready = true;
+  listeningText();
+}
+
+function listeningText() {
+  if (F.error) return;
+  if (!F.mic || !F.mic.on) { setFollowText(F.ready ? '마이크 허용을 기다리는 중…' : '준비 중…'); return; }
+  if (!F.ready) return;
+  if (F.mic.suspended) { setFollowText('소리가 멈췄어요', '다시 듣기', () => { audioContext(); restartMic(); }); return; }
+  setFollowText(F.tracker && F.tracker.conf < 0.25 && F.heard > 5 ? '자리 찾는 중…' : '듣는 중');
+}
+
+async function startFollow() {
+  const ticket = ++F.ticket;
+  F.ready = false; F.error = ''; F.heard = 0;
+  updateFollowUi();
+  setFollowText('준비 중…');
+  const prep = prepareFollow(ticket).catch((e) => { console.error(e); if (ticket === F.ticket) setFollowText('악보를 읽지 못했어요'); });
+  await restartMic(ticket);
+  await prep;
+}
+
+async function restartMic(ticket = F.ticket) {
+  if (!F.mic) F.mic = new MicListener(onSound, { fakeUrl: params.get('fake') || undefined });
+  try {
+    if (!F.mic.on) {
+      F.error = '';
+      if (!$('followText').textContent.startsWith('악보 읽는 중')) setFollowText('마이크 허용을 기다리는 중…');
+      await F.mic.start();
+    }
+    if (ticket !== F.ticket || $('viewer').hidden || !F.on) { F.mic.stop(); return; }
+    updateFollowUi();
+    if (F.ready) listeningText();
+  } catch (e) {
+    console.warn(e);
+    F.error = 'mic';
+    updateFollowUi();
+    const denied = e && (e.name === 'NotAllowedError' || e.name === 'SecurityError');
+    setFollowText(denied ? '마이크 사용이 허용되지 않았어요' : '마이크를 켤 수 없어요', '방법 보기', micHelp);
+  }
+}
+
+function stopFollow() {
+  F.ticket++;
+  F.ready = false;
+  if (F.mic) F.mic.stop();
+  updateFollowUi();
+}
+
+function micHelp() {
+  runTour([{
+    target: null, title: '마이크 허용하기',
+    text: '자동 넘김은 마이크로 연주 소리를 들어야 해요.<br><br>'
+      + '• <b>사파리에서</b>: 주소창 왼쪽 <b>aA</b>(또는 ···) → <b>웹 사이트 설정</b> → <b>마이크</b> → <b>허용</b><br>'
+      + '• <b>홈 화면 앱에서</b>: 설정 앱 → <b>앱 → Safari</b> → <b>마이크</b> → <b>허용</b> (iPadOS 버전에 따라 <b>Safari → 웹 사이트 설정</b>)<br><br>'
+      + '바꾼 뒤 악보를 다시 열거나 <b>다시 시도</b>를 누르세요.',
+  }], { onDone: () => { audioContext(); restartMic(); } });
+}
+
+function onSound(ev) {
+  const dot = $('micDot');
+  dot.classList.add('hit');
+  clearTimeout(F.hitTimer);
+  F.hitTimer = setTimeout(() => dot.classList.remove('hit'), 120);
+  if (!F.ready || $('viewer').hidden) return;
+  F.heard++;
+  const pos = F.tracker.push(ev.chroma);
+  const now = performance.now() / 1000;
+  if (!V.memo) {
+    const want = F.turner.decide({ pos, conf: F.tracker.conf, jumped: F.tracker.jumped }, V.page, V.perView, now);
+    if (want != null && want !== V.page) {
+      showPage(want, { flash: want > V.page ? 'right' : 'left' });
+      F.turner.turned(now);
+    }
+  }
+  drawMark();
+  if (debug) { const e = F.events[pos]; setFollowText(`${e.page + 1}쪽 ${e.sys + 1}줄 #${pos} 확신 ${F.tracker.conf.toFixed(2)}${F.tracker.jumped ? ' 옮김' : ''}`); }
+  else listeningText();
+}
+
+/** 손으로 넘겼으면 그 쪽 처음부터 다시 따라간다 */
+function followManualTurn(page) {
+  if (!F.ready) return;
+  F.tracker.reset(F.starts[page - 1]);
+  F.turner.turned(performance.now() / 1000 + 1.5);
+  drawMark();
+}
+
+/** 지금 따라가는 줄 왼쪽에 주황색 막대 */
+function drawMark() {
+  if (!F.on || !F.ready || !F.tracker || F.tracker.conf < 0.25) {
+    $('pages').querySelectorAll('.follow-mark').forEach((m) => m.remove());
+    F.markKey = '';
+    return;
+  }
+  const e = F.events[F.tracker.pos];
+  const wrap = $('pages').querySelector(`.pagewrap[data-page="${e.page + 1}"]`);
+  const key = `${e.page}-${e.sys}-${wrap ? 'y' : 'n'}`;
+  if (key === F.markKey) return;
+  F.markKey = key;
+  $('pages').querySelectorAll('.follow-mark').forEach((m) => m.remove());
+  if (!wrap) return;
+  const pg = F.pages[e.page], sy = pg.systems[e.sys];
+  const c = wrap.querySelector('canvas.page');
+  const h = c.offsetHeight / pg.h;
+  const m = document.createElement('div');
+  m.className = 'follow-mark';
+  m.style.top = sy.top * h + 'px';
+  m.style.height = Math.max(8, (sy.bottom - sy.top) * h) + 'px';
+  wrap.appendChild(m);
+}
+
+function setupFollow() {
+  $('followBtn').addEventListener('click', () => {
+    F.on = !F.on;
+    store.set('follow', F.on);
+    if (!F.on) { stopFollow(); toast('자동 넘김을 껐어요', 1500); showBar(true, 2000); return; }
+    audioContext(); // 누른 순간에 오디오 준비 (아이패드 규칙)
+    updateFollowUi();
+    if (!store.get('tour.follow', false)) {
+      store.set('tour.follow', true);
+      runTour([
+        { target: null, title: '자동 넘김', text: '마이크로 연주를 듣고 지금 어디를 치는지 따라가요. <b>마지막 줄 중간쯤</b>에서 다음 쪽으로 넘겨요.<br><br>처음 한 번 <b>마이크 사용</b>을 물으면 <b>허용</b>을 눌러 주세요. 한 번 켜 두면 다음부터 악보를 열 때 저절로 들어요.' },
+        { target: null, title: '소리는 이 아이패드 안에서만', text: '소리는 <b>녹음하지 않고</b> 어디로도 보내지 않아요. 이 기기 안에서 음 높이만 계산해요.<br>마이크를 쓰는 동안 화면 위에 <b>주황색 점</b>이 보이는 것은 정상이에요. 서재로 나가거나 다른 앱으로 가면 마이크가 꺼져요.' },
+        { target: () => $('followPill'), title: '듣는 중 표시', text: '주황 점이 깜빡이면 소리를 듣고 있는 거예요. 악보 왼쪽의 <b>주황 막대</b>가 지금 따라가는 줄이에요.<br>처음 여는 악보는 잠깐 <b>악보를 읽는</b> 시간이 있어요.' },
+        { target: null, title: '이럴 때는', text: '• 엉뚱한 쪽으로 가면 <b>손으로 넘기세요</b>. 그 쪽 처음부터 다시 따라가요.<br>• 틀려서 몇 마디 앞에서 다시 치면 잠시 뒤 따라 돌아가요.<br>• 스케일 연습처럼 넘김이 필요 없을 때는 <b>자동 넘김</b>을 눌러 끄세요.' },
+      ], { onDone: () => { showBar(true, 2500); startFollow(); } });
+      $('followPill').hidden = false;
+      setFollowText('준비 중…');
+    } else {
+      startFollow();
+      showBar(true, 2000);
+    }
+  });
+}
+
 // ---------------- 메모 (애플 펜슬) ----------------
 function setMemo(on) {
   V.memo = on;
@@ -464,6 +678,7 @@ function viewerTour() {
     { target: zone(0, 0.35), title: '이전 쪽', text: '화면 <b>왼쪽</b>을 누르면 이전 쪽으로 돌아가요. 오른쪽으로 밀어도 돼요.' },
     { target: zone(0.35, 0.65), title: '메뉴 보이기 · 숨기기', text: '<b>가운데</b>를 누르면 위쪽 메뉴가 나타나거나 사라져요. 연주할 때는 숨겨 두면 악보가 넓게 보여요.' },
     { target: null, title: '넘김 페달', text: '블루투스 <b>악보 넘김 페달</b>을 아이패드에 연결하면 발로도 넘길 수 있어요. (방향키·Page Down·스페이스를 보내는 페달이면 대부분 돼요)' },
+    { target: () => $('followBtn'), title: '자동 넘김', text: '켜 두면 <b>마이크로 연주를 듣고</b> 알아서 쪽을 넘겨요. 처음 켤 때 자세히 알려 드릴게요.' },
     { target: () => $('metroBtn'), title: '메트로놈', text: '악보의 템포 표시를 읽어 추천 BPM을 넣어 줘요. 숫자를 눌러 직접 입력할 수 있어요.' },
     { target: () => $('inkBtn'), title: '메모 (애플 펜슬)', text: '누르면 메모 모드가 돼요. 애플 펜슬로 악보 위에 쓰고, 다 쓰면 <b>완료</b>를 누르세요.' },
     { target: () => $('layoutBtn'), title: '한 쪽 · 두 쪽', text: '<b>자동</b>은 세로일 때 한 쪽, 가로일 때 두 쪽을 보여 줘요. 누를 때마다 자동 → 한 쪽 → 두 쪽으로 바뀌어요.' },
@@ -534,8 +749,14 @@ function setupViewerInput() {
     rt = setTimeout(() => { V.cache.clear(); showPage(V.page); }, 150);
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') keepAwake();
-    else if (V.ink) V.ink.flush();
+    if (document.visibilityState === 'visible') {
+      keepAwake();
+      if (F.on && !$('viewer').hidden) startFollow();
+    } else {
+      if (V.ink) V.ink.flush();
+      // 다른 앱으로 가면 마이크를 끈다 (주황 점이 꺼짐). 돌아오면 다시 켬
+      if (F.mic) F.mic.stop();
+    }
   });
   addEventListener('popstate', () => { if (!$('viewer').hidden) closeViewer(true); });
 }
@@ -562,6 +783,7 @@ setupLibraryInput();
 setupViewerInput();
 setupMetro();
 setupInk();
+setupFollow();
 setTab(tab);
 if (!store.get('tour.library', false)) setTimeout(libraryTour, 400);
 
