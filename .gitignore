@@ -1,0 +1,11 @@
+# 악보·악보에서 나온 정보는 절대 올리지 않음 (개인 연습용 · 공유 금지)
+*.pdf
+*.mxl
+*.musicxml
+eval-data/
+scores/
+.DS_Store
+
+# 개인 작업 기록 (곡명·경로 등 포함) — 이 Mac에만 둠
+CLAUDE.md
+docs/HISTORY.md

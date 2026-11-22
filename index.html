@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="악보 넘김">
+  <meta name="theme-color" content="#f6f4ef">
+  <title>악보 넘김</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <!-- 서재 -->
+  <section id="library" class="view">
+    <header class="lib-head">
+      <h1>악보 넘김</h1>
+      <div class="head-btns">
+        <button class="btn round" id="helpBtn" aria-label="사용법 안내">?</button>
+        <label class="btn primary" id="importBtn">
+          PDF 가져오기
+          <input type="file" id="fileInput" accept="application/pdf,.pdf" multiple hidden>
+        </label>
+      </div>
+    </header>
+    <div class="lib-bar">
+      <div class="tabs" id="tabs" role="tablist">
+        <button role="tab" data-tab="recent" class="on">최근 연 악보</button>
+        <button role="tab" data-tab="all">전체 <span id="countAll"></span></button>
+      </div>
+      <input id="search" type="search" placeholder="악보 이름 찾기" autocomplete="off">
+    </div>
+    <div id="grid" class="grid"></div>
+    <div id="empty" class="empty" hidden>
+      <p class="big">아직 악보가 없습니다</p>
+      <p>위의 <b>PDF 가져오기</b>를 눌러 파일 앱에서 악보를 고르세요. 여러 개를 한 번에 고를 수 있습니다.</p>
+      <p>한 번 가져온 악보는 이 아이패드의 앱 안에 남아 있어서, 다음부터는 여기서 바로 엽니다. 악보는 인터넷으로 보내지지 않습니다.</p>
+    </div>
+  </section>
+
+  <!-- 악보 보기 -->
+  <section id="viewer" class="view" hidden>
+    <div id="pages" class="pages"></div>
+    <div id="pageBadge" class="badge"></div>
+    <header id="vbar" class="vbar">
+      <button class="btn" id="backBtn">← 서재</button>
+      <div class="vtitle" id="vtitle"></div>
+      <div class="vbtns">
+        <button class="btn" id="metroBtn" aria-label="메트로놈">♩ 메트로놈</button>
+        <button class="btn" id="inkBtn" aria-label="메모">✎ 메모</button>
+        <button class="btn" id="layoutBtn">자동</button>
+        <button class="btn" id="prevBtn" aria-label="이전 쪽">◀</button>
+        <span id="pageNum" class="pnum"></span>
+        <button class="btn" id="nextBtn" aria-label="다음 쪽">▶</button>
+        <button class="btn round" id="vHelpBtn" aria-label="사용법 안내">?</button>
+      </div>
+    </header>
+
+    <!-- 메트로놈 -->
+    <div id="metroPanel" class="panel" hidden>
+      <div class="panel-head"><b>메트로놈</b><button class="link" id="metroClose">닫기</button></div>
+      <div id="bpmSource" class="muted"></div>
+      <div class="bpm-row">
+        <button class="btn" id="bpmMinus" aria-label="1 느리게">−</button>
+        <input id="bpmInput" type="number" inputmode="numeric" min="20" max="300" aria-label="BPM">
+        <span class="unit">BPM</span>
+        <button class="btn" id="bpmPlus" aria-label="1 빠르게">+</button>
+      </div>
+      <div class="panel-row">
+        <button class="btn" id="bpmSuggest">추천값으로</button>
+        <button class="btn primary" id="metroStart">▶ 시작</button>
+      </div>
+    </div>
+    <div id="metroPill" class="pill" hidden>
+      <span class="beat" id="beatDot"></span><span id="pillBpm"></span><button class="link" id="pillStop">정지</button>
+    </div>
+
+    <!-- 메모 도구 -->
+    <div id="palette" class="palette" hidden>
+      <button class="tool" data-tool="black" aria-label="검정 펜"><span class="sw" style="background:#111"></span></button>
+      <button class="tool" data-tool="red" aria-label="빨강 펜"><span class="sw" style="background:#d3302a"></span></button>
+      <button class="tool" data-tool="blue" aria-label="파랑 펜"><span class="sw" style="background:#1d5fd6"></span></button>
+      <button class="tool" data-tool="hi" aria-label="형광펜"><span class="sw hi"></span></button>
+      <button class="tool" data-tool="eraser" aria-label="지우개">지우개</button>
+      <span class="sep"></span>
+      <button class="tool" id="inkUndo">되돌리기</button>
+      <button class="tool" id="inkClear">이 쪽 지우기</button>
+      <button class="tool done" id="inkDone">완료</button>
+    </div>
+  </section>
+
+  <div id="toast" class="toast" hidden></div>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
