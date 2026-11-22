@@ -399,7 +399,7 @@ function setupMetro() {
   $('bpmInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') { setBpm(parseInt($('bpmInput').value, 10)); $('bpmInput').blur(); } });
   $('metroStart').addEventListener('click', () => {
     setBpm(parseInt($('bpmInput').value, 10) || metro.bpm);
-    if (metro.running) metro.stop(); else metro.start();
+    if (metro.running) metro.stop(); else { metro.start(); if (F.on) metroFollowWarn(); }
     updateMetroUi();
   });
   $('pillStop').addEventListener('click', (e) => { e.stopPropagation(); metro.stop(); updateMetroUi(); });
@@ -522,6 +522,17 @@ function stopFollow() {
   updateFollowUi();
 }
 
+/** 메트로놈과 자동 넘김을 함께 켰을 때 한 번 알림 ("다시 보지 않기"를 누르면 그다음부터 안 띄움) */
+function metroFollowWarn() {
+  if (store.get('warn.metroFollow', false) || isTourOpen()) return;
+  runTour([{
+    target: null, title: '메트로놈과 자동 넘김을 함께 켰어요',
+    text: '메트로놈 소리도 마이크에 들어가서 <b>연주 위치 인식이 떨어질 수 있어요</b>.<br><br>'
+      + '• 넘김이 이상하면 <b>메트로놈을 끄거나</b> 아이패드 소리를 줄여 보세요.<br>'
+      + '• 메트로놈이 꼭 필요하면 잠시 <b>자동 넘김을 끄고</b> 손이나 페달로 넘기세요.',
+  }], { doneLabel: '확인', skipLabel: '다시 보지 않기', onSkip: () => store.set('warn.metroFollow', true) });
+}
+
 function micHelp() {
   runTour([{
     target: null, title: '마이크 허용하기',
@@ -529,7 +540,7 @@ function micHelp() {
       + '• <b>사파리에서</b>: 주소창 왼쪽 <b>aA</b>(또는 ···) → <b>웹 사이트 설정</b> → <b>마이크</b> → <b>허용</b><br>'
       + '• <b>홈 화면 앱에서</b>: 설정 앱 → <b>앱 → Safari</b> → <b>마이크</b> → <b>허용</b> (iPadOS 버전에 따라 <b>Safari → 웹 사이트 설정</b>)<br><br>'
       + '바꾼 뒤 악보를 다시 열거나 <b>다시 시도</b>를 누르세요.',
-  }], { onDone: () => { audioContext(); restartMic(); } });
+  }], { doneLabel: '다시 시도', skipLabel: '닫기', onDone: () => { audioContext(); restartMic(); } });
 }
 
 function onSound(ev) {
@@ -598,13 +609,14 @@ function setupFollow() {
         { target: null, title: '자동 넘김', text: '마이크로 연주를 듣고 지금 어디를 치는지 따라가요. <b>마지막 줄 중간쯤</b>에서 다음 쪽으로 넘겨요.<br><br>처음 한 번 <b>마이크 사용</b>을 물으면 <b>허용</b>을 눌러 주세요. 한 번 켜 두면 다음부터 악보를 열 때 저절로 들어요.' },
         { target: null, title: '소리는 이 아이패드 안에서만', text: '소리는 <b>녹음하지 않고</b> 어디로도 보내지 않아요. 이 기기 안에서 음 높이만 계산해요.<br>마이크를 쓰는 동안 화면 위에 <b>주황색 점</b>이 보이는 것은 정상이에요. 서재로 나가거나 다른 앱으로 가면 마이크가 꺼져요.' },
         { target: () => $('followPill'), title: '듣는 중 표시', text: '주황 점이 깜빡이면 소리를 듣고 있는 거예요. 악보 왼쪽의 <b>주황 막대</b>가 지금 따라가는 줄이에요.<br>처음 여는 악보는 잠깐 <b>악보를 읽는</b> 시간이 있어요.' },
-        { target: null, title: '이럴 때는', text: '• 엉뚱한 쪽으로 가면 <b>손으로 넘기세요</b>. 그 쪽 처음부터 다시 따라가요.<br>• 틀려서 몇 마디 앞에서 다시 치면 잠시 뒤 따라 돌아가요.<br>• 스케일 연습처럼 넘김이 필요 없을 때는 <b>자동 넘김</b>을 눌러 끄세요.' },
+        { target: null, title: '이럴 때는', text: '• 엉뚱한 쪽으로 가면 <b>손으로 넘기세요</b>. 그 쪽 처음부터 다시 따라가요.<br>• 틀려서 몇 마디 앞에서 다시 치면 잠시 뒤 따라 돌아가요.<br>• 스케일 연습처럼 넘김이 필요 없을 때는 <b>자동 넘김</b>을 눌러 끄세요.<br>• <b>메트로놈을 같이 켜 두면</b> 메트로놈 소리가 마이크에 섞여 <b>인식이 떨어질 수 있어요</b>. 넘김이 이상하면 메트로놈을 꺼 보세요.' },
       ], { onDone: () => { showBar(true, 2500); startFollow(); } });
       $('followPill').hidden = false;
       setFollowText('준비 중…');
     } else {
       startFollow();
       showBar(true, 2000);
+      if (metro.running) metroFollowWarn();
     }
   });
 }

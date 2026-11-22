@@ -1,11 +1,12 @@
 // 첫 사용 안내 (게임 튜토리얼처럼): 주변을 어둡게 하고 해당 버튼·영역만 테두리로 밝혀 설명을 띄운다.
 //  steps: [{ target: () => Element | {left, top, width, height} | null, title, text, point?: 'safari-share' }]
+//  opts: onDone(끝·건너뛰기 모두), onSkip(건너뛰기 버튼만), skipLabel, doneLabel(마지막 장 버튼 글자)
 
 let active = null;
 
 export function isTourOpen() { return !!active; }
 
-export function runTour(steps, { onDone } = {}) {
+export function runTour(steps, { onDone, onSkip, skipLabel = '건너뛰기', doneLabel = '시작하기' } = {}) {
   if (active) active.close(false);
   steps = steps.filter((s) => !s.when || s.when());
   if (!steps.length) { if (onDone) onDone(); return; }
@@ -20,7 +21,7 @@ export function runTour(steps, { onDone } = {}) {
       <div class="tour-step"></div>
       <h3 class="tour-title"></h3>
       <p class="tour-text"></p>
-      <div class="tour-btns"><button class="link tour-skip">건너뛰기</button><span class="sp"></span><button class="btn tour-prev">이전</button><button class="btn primary tour-next">다음</button></div>
+      <div class="tour-btns"><button class="link tour-skip"></button><span class="sp"></span><button class="btn tour-prev">이전</button><button class="btn primary tour-next">다음</button></div>
     </div>`;
   document.body.appendChild(root);
   const $ = (c) => root.querySelector(c);
@@ -44,10 +45,12 @@ export function runTour(steps, { onDone } = {}) {
   const place = () => {
     const st = steps[i];
     $('.tour-step').textContent = `${i + 1} / ${steps.length}`;
+    $('.tour-step').hidden = steps.length === 1; // 한 장짜리 알림은 1 / 1 표시 안 함
     $('.tour-title').textContent = st.title || '';
     $('.tour-text').innerHTML = st.text;
     $('.tour-prev').hidden = i === 0;
-    $('.tour-next').textContent = i === steps.length - 1 ? '시작하기' : '다음';
+    $('.tour-next').textContent = i === steps.length - 1 ? doneLabel : '다음';
+    $('.tour-skip').textContent = skipLabel;
     $('.tour-point').hidden = st.point !== 'safari-share';
     const r = rectOf(st.target);
     const hole = $('.tour-hole'), shade = $('.tour-shade'), card = $('.tour-card');
@@ -104,7 +107,7 @@ export function runTour(steps, { onDone } = {}) {
   };
   $('.tour-next').addEventListener('click', () => { if (i < steps.length - 1) { i++; place(); } else close(true); });
   $('.tour-prev').addEventListener('click', () => { if (i > 0) { i--; place(); } });
-  $('.tour-skip').addEventListener('click', () => close(true));
+  $('.tour-skip').addEventListener('click', () => { if (onSkip) onSkip(); close(true); });
   addEventListener('resize', place);
   active = { close };
   place();
