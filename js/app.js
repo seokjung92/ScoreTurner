@@ -139,7 +139,7 @@ function card(m) {
   more.setAttribute('aria-label', '더 보기');
   more.addEventListener('click', (e) => { e.stopPropagation(); cardMenu(m, more); });
   el.append(th, meta, more);
-  el.addEventListener('click', () => { if (F.on) audioContext(); openScore(m.id); });
+  el.addEventListener('click', () => openScore(m.id));
   return el;
 }
 
@@ -318,7 +318,6 @@ async function openScore(id) {
   keepAwake();
   await showPage(meta.page || 1);
   updateFollowUi();
-  if (F.on) startFollow();
   if (!store.get('tour.viewer', false)) viewerTour();
   else showBar(true, 2500);
 }
@@ -327,7 +326,7 @@ async function closeViewer(fromPop = false) {
   if ($('viewer').hidden) return;
   metro.stop();
   updateMetroUi();
-  stopFollow();
+  followOff();
   $('metroPanel').hidden = true;
   setMemo(false);
   if (V.ink) await V.ink.flush();
@@ -409,7 +408,7 @@ function setupMetro() {
 const OMR_VERSION = 1;
 const debug = params.has('debug');
 const F = {
-  on: store.get('follow', false),
+  on: false, // 켤 때마다 묻는다 (기억하지 않음)
   mic: null, tracker: null, turner: null, events: null, starts: null, pages: null,
   ticket: 0, ready: false, error: '', hitTimer: 0, markKey: '',
 };
@@ -534,13 +533,17 @@ function metroFollowWarn() {
 }
 
 function micHelp() {
+  let cancelled = false;
   runTour([{
     target: null, title: '마이크 허용하기',
-    text: '자동 넘김은 마이크로 연주 소리를 들어야 해요.<br><br>'
-      + '• <b>사파리에서</b>: 주소창 왼쪽 <b>aA</b>(또는 ···) → <b>웹 사이트 설정</b> → <b>마이크</b> → <b>허용</b><br>'
-      + '• <b>홈 화면 앱에서</b>: 설정 앱 → <b>앱 → Safari</b> → <b>마이크</b> → <b>허용</b> (iPadOS 버전에 따라 <b>Safari → 웹 사이트 설정</b>)<br><br>'
-      + '바꾼 뒤 악보를 다시 열거나 <b>다시 시도</b>를 누르세요.',
-  }], { doneLabel: '다시 시도', skipLabel: '닫기', onDone: () => { audioContext(); restartMic(); } });
+    text: '사파리가 이 사이트의 마이크를 막고 있어요. 자동 넘김을 쓰려면 마이크 설정을 <b>묻기</b>(또는 허용)로 바꿔 주세요.<br><br>'
+      + '• <b>사파리에서</b>: 주소창 왼쪽 <b>aA</b>(또는 ···) → <b>웹 사이트 설정</b> → <b>마이크</b> → <b>묻기</b><br>'
+      + '• <b>홈 화면 앱에서</b>: 설정 앱 → <b>앱 → Safari</b> → <b>마이크</b> → <b>묻기</b> (iPadOS 버전에 따라 <b>Safari → 웹 사이트 설정</b>)<br><br>'
+      + '<b>묻기</b>로 두면 항상 켜 두지 않고, 쓸 때마다 사파리가 물어봐요.',
+  }], {
+    doneLabel: '다시 시도', skipLabel: '닫기', onSkip: () => { cancelled = true; },
+    onDone: () => { if (cancelled) { followOff(); return; } audioContext(); restartMic(); },
+  });
 }
 
 function onSound(ev) {
@@ -596,28 +599,51 @@ function drawMark() {
   wrap.appendChild(m);
 }
 
-function setupFollow() {
-  $('followBtn').addEventListener('click', () => {
-    F.on = !F.on;
-    store.set('follow', F.on);
-    if (!F.on) { stopFollow(); toast('자동 넘김을 껐어요', 1500); showBar(true, 2000); return; }
-    audioContext(); // 누른 순간에 오디오 준비 (아이패드 규칙)
+/** 자동 넘김 끄기 (버튼, 서재로 나감, 다른 앱으로 감) */
+function followOff(msg) {
+  F.on = false;
+  stopFollow();
+  if (msg) toast(msg, 2200);
+}
+
+/** 켤 때마다 마이크를 써도 되는지 묻는다. 처음 한 번은 설명 4장, 그다음부터는 한 장 */
+function askFollow() {
+  let cancelled = false;
+  const go = () => {
+    if (cancelled || $('viewer').hidden) { followOff(); return; }
+    audioContext(); // "마이크 켜기"를 누른 순간에 오디오 준비 (아이패드 규칙)
+    F.on = true;
     updateFollowUi();
-    if (!store.get('tour.follow', false)) {
-      store.set('tour.follow', true);
-      runTour([
-        { target: null, title: '자동 넘김', text: '마이크로 연주를 듣고 지금 어디를 치는지 따라가요. <b>마지막 줄 중간쯤</b>에서 다음 쪽으로 넘겨요.<br><br>처음 한 번 <b>마이크 사용</b>을 물으면 <b>허용</b>을 눌러 주세요. 한 번 켜 두면 다음부터 악보를 열 때 저절로 들어요.' },
-        { target: null, title: '소리는 이 아이패드 안에서만', text: '소리는 <b>녹음하지 않고</b> 어디로도 보내지 않아요. 이 기기 안에서 음 높이만 계산해요.<br>마이크를 쓰는 동안 화면 위에 <b>주황색 점</b>이 보이는 것은 정상이에요. 서재로 나가거나 다른 앱으로 가면 마이크가 꺼져요.' },
-        { target: () => $('followPill'), title: '듣는 중 표시', text: '주황 점이 깜빡이면 소리를 듣고 있는 거예요. 악보 왼쪽의 <b>주황 막대</b>가 지금 따라가는 줄이에요.<br>처음 여는 악보는 잠깐 <b>악보를 읽는</b> 시간이 있어요.' },
-        { target: null, title: '이럴 때는', text: '• 엉뚱한 쪽으로 가면 <b>손으로 넘기세요</b>. 그 쪽 처음부터 다시 따라가요.<br>• 틀려서 몇 마디 앞에서 다시 치면 잠시 뒤 따라 돌아가요.<br>• 스케일 연습처럼 넘김이 필요 없을 때는 <b>자동 넘김</b>을 눌러 끄세요.<br>• <b>메트로놈을 같이 켜 두면</b> 메트로놈 소리가 마이크에 섞여 <b>인식이 떨어질 수 있어요</b>. 넘김이 이상하면 메트로놈을 꺼 보세요.' },
-      ], { onDone: () => { showBar(true, 2500); startFollow(); } });
-      $('followPill').hidden = false;
-      setFollowText('준비 중…');
-    } else {
-      startFollow();
-      showBar(true, 2000);
-      if (metro.running) metroFollowWarn();
-    }
+    showBar(true, 2000);
+    startFollow();
+  };
+  const opts = { doneLabel: '마이크 켜기', skipLabel: '취소', onSkip: () => { cancelled = true; }, onDone: go };
+  const metroNote = metro.running
+    ? '<br><br>※ 지금 <b>메트로놈</b>이 켜져 있어요. 메트로놈 소리가 마이크에 섞여 인식이 떨어질 수 있어요.' : '';
+  if (!store.get('tour.follow', false)) {
+    store.set('tour.follow', true);
+    runTour([
+      { target: null, title: '자동 넘김', text: '마이크로 연주를 듣고 지금 어디를 치는지 따라가요. <b>마지막 줄 중간쯤</b>에서 다음 쪽으로 넘겨요.<br><br><b>켤 때마다</b> 마이크를 써도 되는지 먼저 물어요. 사파리가 한 번 더 물으면 <b>허용</b>을 눌러 주세요.' },
+      { target: null, title: '소리는 이 아이패드 안에서만', text: '소리는 <b>녹음하지 않고</b> 어디로도 보내지 않아요. 이 기기 안에서 음 높이만 계산해요.<br>마이크를 쓰는 동안 화면 위에 <b>주황색 점</b>이 보이는 것은 정상이에요.<br><b>서재로 나가거나 다른 앱으로 가면 자동 넘김이 꺼지고</b> 마이크도 꺼져요. 다시 쓰려면 다시 켜세요.' },
+      { target: () => $('followPill'), title: '듣는 중 표시', text: '주황 점이 깜빡이면 소리를 듣고 있는 거예요. 악보 왼쪽의 <b>주황 막대</b>가 지금 따라가는 줄이에요.<br>처음 여는 악보는 잠깐 <b>악보를 읽는</b> 시간이 있어요.' },
+      { target: null, title: '이럴 때는', text: '• 엉뚱한 쪽으로 가면 <b>손으로 넘기세요</b>. 그 쪽 처음부터 다시 따라가요.<br>• 틀려서 몇 마디 앞에서 다시 치면 잠시 뒤 따라 돌아가요.<br>• 스케일 연습처럼 넘김이 필요 없을 때는 <b>자동 넘김</b>을 눌러 끄세요.<br>• <b>메트로놈을 같이 켜 두면</b> 메트로놈 소리가 마이크에 섞여 <b>인식이 떨어질 수 있어요</b>. 넘김이 이상하면 메트로놈을 꺼 보세요.<br><br>지금 마이크를 켤까요?' + metroNote },
+    ], { ...opts, onDone: () => { $('followPill').hidden = true; go(); } });
+    // 설명 3장에서 가리킬 표시를 잠깐 보여 줌
+    $('followPill').hidden = false;
+    setFollowText('듣는 중');
+  } else {
+    runTour([{
+      target: null, title: '마이크를 켤까요?',
+      text: '자동 넘김을 쓰려면 마이크로 연주를 들어야 해요. 소리는 <b>녹음하지 않고</b> 이 기기 안에서만 계산해요.<br>서재로 나가거나 다른 앱으로 가면 꺼져요.' + metroNote,
+    }], opts);
+  }
+}
+
+function setupFollow() {
+  try { localStorage.removeItem('st.follow'); } catch (e) { /* 예전 버전의 "켜 둔 상태 기억" 지움 */ }
+  $('followBtn').addEventListener('click', () => {
+    if (F.on) { followOff('자동 넘김을 껐어요'); showBar(true, 2000); return; }
+    askFollow();
   });
 }
 
@@ -690,7 +716,7 @@ function viewerTour() {
     { target: zone(0, 0.35), title: '이전 쪽', text: '화면 <b>왼쪽</b>을 누르면 이전 쪽으로 돌아가요. 오른쪽으로 밀어도 돼요.' },
     { target: zone(0.35, 0.65), title: '메뉴 보이기 · 숨기기', text: '<b>가운데</b>를 누르면 위쪽 메뉴가 나타나거나 사라져요. 연주할 때는 숨겨 두면 악보가 넓게 보여요.' },
     { target: null, title: '넘김 페달', text: '블루투스 <b>악보 넘김 페달</b>을 아이패드에 연결하면 발로도 넘길 수 있어요. (방향키·Page Down·스페이스를 보내는 페달이면 대부분 돼요)' },
-    { target: () => $('followBtn'), title: '자동 넘김', text: '켜 두면 <b>마이크로 연주를 듣고</b> 알아서 쪽을 넘겨요. 처음 켤 때 자세히 알려 드릴게요.' },
+    { target: () => $('followBtn'), title: '자동 넘김', text: '누르면 <b>마이크로 연주를 듣고</b> 알아서 쪽을 넘겨요. <b>켤 때마다</b> 마이크를 써도 되는지 먼저 물어요. 처음 켤 때 자세히 알려 드릴게요.' },
     { target: () => $('metroBtn'), title: '메트로놈', text: '악보의 템포 표시를 읽어 추천 BPM을 넣어 줘요. 숫자를 눌러 직접 입력할 수 있어요.' },
     { target: () => $('inkBtn'), title: '메모 (애플 펜슬)', text: '누르면 메모 모드가 돼요. 애플 펜슬로 악보 위에 쓰고, 다 쓰면 <b>완료</b>를 누르세요.' },
     { target: () => $('layoutBtn'), title: '한 쪽 · 두 쪽', text: '<b>자동</b>은 세로일 때 한 쪽, 가로일 때 두 쪽을 보여 줘요. 누를 때마다 자동 → 한 쪽 → 두 쪽으로 바뀌어요.' },
@@ -763,11 +789,11 @@ function setupViewerInput() {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       keepAwake();
-      if (F.on && !$('viewer').hidden) startFollow();
+      if (F.offByBg) { F.offByBg = false; if (!$('viewer').hidden) toast('다른 앱으로 가서 자동 넘김을 껐어요. 다시 쓰려면 🎤 버튼을 누르세요', 3500); }
     } else {
       if (V.ink) V.ink.flush();
-      // 다른 앱으로 가면 마이크를 끈다 (주황 점이 꺼짐). 돌아오면 다시 켬
-      if (F.mic) F.mic.stop();
+      // 다른 앱으로 가면 자동 넘김과 마이크를 끈다 (주황 점이 꺼짐). 다시 쓰려면 다시 켜서 승인
+      if (F.on) { followOff(); F.offByBg = true; }
     }
   });
   addEventListener('popstate', () => { if (!$('viewer').hidden) closeViewer(true); });
