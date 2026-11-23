@@ -532,14 +532,25 @@ function metroFollowWarn() {
   }], { doneLabel: '확인', skipLabel: '다시 보지 않기', onSkip: () => store.set('warn.metroFollow', true) });
 }
 
+/** 마이크 설정 바꾸는 곳 (아이패드 사파리, 홈 화면 앱, 맥 사파리) */
+const MIC_SETTINGS = '• <b>아이패드 사파리</b>: 주소창 왼쪽 <b>aA</b>(또는 ···) → <b>웹 사이트 설정</b> → <b>마이크</b> → <b>묻기</b><br>'
+  + '• <b>홈 화면 앱</b>: 설정 앱 → <b>앱 → Safari</b> → <b>마이크</b> → <b>묻기</b> (iPadOS 버전에 따라 <b>Safari → 웹 사이트 설정</b>)<br>'
+  + '• <b>맥 사파리</b>: 메뉴 막대 <b>Safari → 설정…</b> → <b>웹 사이트</b> 탭 → 왼쪽 <b>마이크</b> → 이 사이트를 <b>묻기</b>';
+
+/** 사파리가 이 사이트 마이크를 막아 두었는지 미리 확인: 'denied' | 'granted' | 'prompt' | 'unknown' */
+async function micState() {
+  try {
+    if (!navigator.permissions || !navigator.permissions.query) return 'unknown';
+    return (await navigator.permissions.query({ name: 'microphone' })).state;
+  } catch (e) { return 'unknown'; } // 이 기능이 없는 브라우저
+}
+
 function micHelp() {
   let cancelled = false;
   runTour([{
     target: null, title: '마이크 허용하기',
     text: '사파리가 이 사이트의 마이크를 막고 있어요. 자동 넘김을 쓰려면 마이크 설정을 <b>묻기</b>(또는 허용)로 바꿔 주세요.<br><br>'
-      + '• <b>사파리에서</b>: 주소창 왼쪽 <b>aA</b>(또는 ···) → <b>웹 사이트 설정</b> → <b>마이크</b> → <b>묻기</b><br>'
-      + '• <b>홈 화면 앱에서</b>: 설정 앱 → <b>앱 → Safari</b> → <b>마이크</b> → <b>묻기</b> (iPadOS 버전에 따라 <b>Safari → 웹 사이트 설정</b>)<br><br>'
-      + '<b>묻기</b>로 두면 항상 켜 두지 않고, 쓸 때마다 사파리가 물어봐요.',
+      + MIC_SETTINGS + '<br><br><b>묻기</b>로 두면 항상 켜 두지 않고, 쓸 때마다 사파리가 물어봐요.',
   }], {
     doneLabel: '다시 시도', skipLabel: '닫기', onSkip: () => { cancelled = true; },
     onDone: () => { if (cancelled) { followOff(); return; } audioContext(); restartMic(); },
@@ -606,8 +617,24 @@ function followOff(msg) {
   if (msg) toast(msg, 2200);
 }
 
+/** 자동 넘김 버튼: 먼저 사파리가 마이크를 막아 두었는지 보고, 막혀 있으면 설정 방법부터 안내 */
+async function askFollow(again = false) {
+  if (await micState() === 'denied') {
+    let cancelled = false;
+    runTour([{
+      target: null, title: '지금 마이크가 막혀 있어요',
+      text: '사파리 설정에서 이 사이트의 마이크가 <b>거부</b>로 되어 있어서 자동 넘김을 켤 수 없어요. 아래에서 <b>묻기</b>로 바꿔 주세요.<br><br>'
+        + MIC_SETTINGS
+        + (again ? '<br><br>※ 바꿨는데도 그대로면 페이지를 <b>새로 고침</b>하세요. (홈 화면 앱은 완전히 닫았다가 다시 열기)' : '')
+        + '<br><br>바꾼 뒤 <b>다시 확인</b>을 누르세요.',
+    }], { doneLabel: '다시 확인', skipLabel: '닫기', onSkip: () => { cancelled = true; }, onDone: () => { if (!cancelled) askFollow(true); } });
+    return;
+  }
+  confirmFollow();
+}
+
 /** 켤 때마다 마이크를 써도 되는지 묻는다. 처음 한 번은 설명 4장, 그다음부터는 한 장 */
-function askFollow() {
+function confirmFollow() {
   let cancelled = false;
   const go = () => {
     if (cancelled || $('viewer').hidden) { followOff(); return; }
